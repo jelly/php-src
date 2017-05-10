@@ -96,6 +96,7 @@ PHP_FUNCTION(openssl_pbkdf2);
 PHP_FUNCTION(openssl_pkcs7_verify);
 PHP_FUNCTION(openssl_pkcs7_decrypt);
 PHP_FUNCTION(openssl_pkcs7_sign);
+PHP_FUNCTION(openssl_pkcs7_mem_sign);
 PHP_FUNCTION(openssl_pkcs7_encrypt);
 
 PHP_FUNCTION(openssl_error_string);

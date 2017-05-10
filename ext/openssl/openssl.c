@@ -303,6 +303,16 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_openssl_pkcs7_sign, 0, 0, 5)
 	ZEND_ARG_INFO(0, extracertsfilename)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_openssl_pkcs7_mem_sign, 0, 0, 5)
+	ZEND_ARG_INFO(0, indata)
+	ZEND_ARG_INFO(1, outdata)
+	ZEND_ARG_INFO(0, signcert)
+	ZEND_ARG_INFO(0, signkey)
+	ZEND_ARG_INFO(0, headers) /* array */
+	ZEND_ARG_INFO(0, flags)
+	ZEND_ARG_INFO(0, extracertsfilename)
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_openssl_pkcs7_decrypt, 0, 0, 3)
 	ZEND_ARG_INFO(0, infilename)
 	ZEND_ARG_INFO(0, outfilename)
@@ -510,6 +520,7 @@ const zend_function_entry openssl_functions[] = {
 	PHP_FE(openssl_pkcs7_verify,		arginfo_openssl_pkcs7_verify)
 	PHP_FE(openssl_pkcs7_decrypt,		arginfo_openssl_pkcs7_decrypt)
 	PHP_FE(openssl_pkcs7_sign,			arginfo_openssl_pkcs7_sign)
+	PHP_FE(openssl_pkcs7_mem_sign,		arginfo_openssl_pkcs7_mem_sign)
 	PHP_FE(openssl_pkcs7_encrypt,		arginfo_openssl_pkcs7_encrypt)
 
 	PHP_FE(openssl_private_encrypt,		arginfo_openssl_private_encrypt)
@@ -5320,6 +5331,128 @@ clean_exit:
 	PKCS7_free(p7);
 	BIO_free(infile);
 	BIO_free(outfile);
+	if (others) {
+		sk_X509_pop_free(others, X509_free);
+	}
+	if (privkey && keyresource == NULL) {
+		EVP_PKEY_free(privkey);
+	}
+	if (cert && certresource == NULL) {
+		X509_free(cert);
+	}
+}
+/* }}} */
+
+/* {{{ proto bool openssl_pkcs7_sign(string infile, string &outdata, mixed signcert, mixed signkey, array headers [, long flags [, string extracertsfilename]])
+   Signs the MIME message in the file named infile with signcert/signkey and output the result to file name outfile. headers lists plain text headers to exclude from the signed portion of the message, and should include to, from and subject as a minimum */
+
+PHP_FUNCTION(openssl_pkcs7_mem_sign)
+{
+	zval * zcert, * zprivkey, * zheaders;
+	zval * hval, * zout = NULL;
+	X509 * cert = NULL;
+	EVP_PKEY * privkey = NULL;
+	BIO * in = NULL, * out = NULL;
+	zend_long flags = PKCS7_DETACHED;
+	PKCS7 * p7 = NULL;
+	BIO * infile = NULL, * outfile = NULL;
+	STACK_OF(X509) *others = NULL;
+	zend_resource *certresource = NULL, *keyresource = NULL;
+	zend_string * strindex;
+	char * indata;
+	size_t indata_len;
+	char * extracertsfilename = NULL;
+	size_t extracertsfilename_len;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "sz/zza!|lp!",
+				&indata, &indata_len, &zout,
+				&zcert, &zprivkey, &zheaders, &flags, &extracertsfilename,
+				&extracertsfilename_len) == FAILURE) {
+		return;
+	}
+	printf("my special sign\n");
+
+	RETVAL_FALSE;
+
+	if (extracertsfilename) {
+		others = load_all_certs_from_file(extracertsfilename);
+		if (others == NULL) {
+			goto clean_exit;
+		}
+	}
+
+	privkey = php_openssl_evp_from_zval(zprivkey, 0, "", 0, 0, &keyresource);
+	if (privkey == NULL) {
+		php_error_docref(NULL, E_WARNING, "error getting private key");
+		goto clean_exit;
+	}
+
+	cert = php_openssl_x509_from_zval(zcert, 0, &certresource);
+	if (cert == NULL) {
+		php_error_docref(NULL, E_WARNING, "error getting cert");
+		goto clean_exit;
+	}
+
+	in = BIO_new(BIO_s_mem());
+	if (in == NULL) {
+		php_openssl_store_errors();
+		goto clean_exit;
+	}
+
+	out = BIO_new(BIO_s_mem());
+	if (in == NULL) {
+		php_openssl_store_errors();
+		goto clean_exit;
+	}
+
+
+	p7 = PKCS7_sign(cert, privkey, others, in, (int)flags);
+	if (p7 == NULL) {
+		php_openssl_store_errors();
+		php_error_docref(NULL, E_WARNING, "error creating PKCS7 structure!");
+		goto clean_exit;
+	}
+
+	(void)BIO_reset(in);
+
+	/* tack on extra headers */
+	if (zheaders) {
+		int ret;
+
+		ZEND_HASH_FOREACH_STR_KEY_VAL(Z_ARRVAL_P(zheaders), strindex, hval) {
+			convert_to_string_ex(hval);
+
+			if (strindex) {
+				ret = BIO_printf(outfile, "%s: %s\n", ZSTR_VAL(strindex), Z_STRVAL_P(hval));
+			} else {
+				ret = BIO_printf(outfile, "%s\n", Z_STRVAL_P(hval));
+			}
+			if (ret < 0) {
+				php_openssl_store_errors();
+			}
+		} ZEND_HASH_FOREACH_END();
+	}
+	/* write the signed data */
+	if (!SMIME_write_PKCS7(out, p7, in, (int)flags)) {
+		php_openssl_store_errors();
+		goto clean_exit;
+	}
+	printf("w00t signed\n");
+
+	BUF_MEM *biobuf;
+	BIO_get_mem_ptr(out, &biobuf);
+	zval_dtor(zout);
+	ZVAL_STRINGL(zout, biobuf->data, biobuf->length);
+	php_printf("STRING: value=\"");
+	PHPWRITE(Z_STRVAL_P(zout), Z_STRLEN_P(zout));
+
+
+	RETVAL_TRUE;
+
+clean_exit:
+	PKCS7_free(p7);
+	BIO_free(in);
+	BIO_free(out);
 	if (others) {
 		sk_X509_pop_free(others, X509_free);
 	}
