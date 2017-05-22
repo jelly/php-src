@@ -284,6 +284,15 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_openssl_pkcs7_verify, 0, 0, 2)
 	ZEND_ARG_INFO(0, content)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_openssl_pkcs7_mem_verify, 0, 0, 2)
+	ZEND_ARG_INFO(0, filename)
+	ZEND_ARG_INFO(0, flags)
+	ZEND_ARG_INFO(0, signerscerts)
+	ZEND_ARG_INFO(0, cainfo) /* array */
+	ZEND_ARG_INFO(0, extracerts)
+	ZEND_ARG_INFO(0, content)
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_openssl_pkcs7_encrypt, 0, 0, 4)
 	ZEND_ARG_INFO(0, infile)
 	ZEND_ARG_INFO(0, outfile)
@@ -518,6 +527,7 @@ const zend_function_entry openssl_functions[] = {
 
 /* for S/MIME handling */
 	PHP_FE(openssl_pkcs7_verify,		arginfo_openssl_pkcs7_verify)
+	PHP_FE(openssl_pkcs7_mem_verify,	arginfo_openssl_pkcs7_mem_verify)
 	PHP_FE(openssl_pkcs7_decrypt,		arginfo_openssl_pkcs7_decrypt)
 	PHP_FE(openssl_pkcs7_sign,			arginfo_openssl_pkcs7_sign)
 	PHP_FE(openssl_pkcs7_mem_sign,		arginfo_openssl_pkcs7_mem_sign)
@@ -5091,6 +5101,129 @@ clean_exit:
 }
 /* }}} */
 
+/* {{{ proto bool openssl_pkcs7_mem_verify(string indata, long flags [, string &outdata [, array cainfo [, string extracerts [, string &content]]]])
+   Verifys that the data block is intact, the signer is who they say they are, and returns the CERTs of the signers */
+PHP_FUNCTION(openssl_pkcs7_mem_verify)
+{
+	X509_STORE * store = NULL;
+	zval * cainfo = NULL, * zoutdata = NULL, * zcontent = NULL;
+	STACK_OF(X509) *signers= NULL;
+	STACK_OF(X509) *others = NULL;
+	PKCS7 * p7 = NULL;
+	BIO * in = NULL, * datain = NULL, * dataout = NULL, * bcontent = NULL;
+	zend_long flags = 0;
+	char * indata;
+	int indata_len;
+	char * extracerts = NULL;
+	size_t extracerts_len = 0;
+
+	RETVAL_LONG(-1);
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "sl|zapz", &indata, &indata_len,
+				&flags, &zoutdata, &cainfo,
+				&extracerts, &extracerts_len, &zcontent) == FAILURE) {
+		return;
+	}
+
+	if (extracerts) {
+		others = load_all_certs_from_file(extracerts);
+		if (others == NULL) {
+			goto clean_exit;
+		}
+	}
+
+	flags = flags & ~PKCS7_DETACHED;
+
+	store = setup_verify(cainfo);
+
+	if (!store) {
+		goto clean_exit;
+	}
+
+	in = BIO_new(BIO_s_mem());
+	if (!BIO_write(in, indata, indata_len)) {
+		goto clean_exit;
+	}
+
+	p7 = SMIME_read_PKCS7(in, &datain);
+	if (p7 == NULL) {
+#if DEBUG_SMIME
+		zend_printf("SMIME_read_PKCS7 failed\n");
+#endif
+		php_openssl_store_errors();
+		goto clean_exit;
+	}
+
+	if (!Z_ISNULL_P(zcontent)) {
+		bcontent = BIO_new(BIO_s_mem());
+		if (bcontent == NULL) {
+			goto clean_exit;
+		}
+	}
+
+#if DEBUG_SMIME
+	zend_printf("Calling PKCS7 verify\n");
+#endif
+
+	if (PKCS7_verify(p7, others, store, datain, bcontent, (int)flags)) {
+
+		RETVAL_TRUE;
+
+		/* EML content */
+		if (bcontent) {
+			BUF_MEM *biobuf;
+			BIO_get_mem_ptr(bcontent, &biobuf);
+			zval_dtor(zcontent);
+			ZVAL_STRINGL(zcontent, biobuf->data, biobuf->length);
+		}
+
+		if (!Z_ISNULL_P(zoutdata)) {
+			BIO *certout = BIO_new(BIO_s_mem());
+
+			if (certout) {
+				int i;
+				signers = PKCS7_get0_signers(p7, NULL, (int)flags);
+				if (signers != NULL) {
+
+					for (i = 0; i < sk_X509_num(signers); i++) {
+						if (!PEM_write_bio_X509(certout, sk_X509_value(signers, i))) {
+							php_openssl_store_errors();
+							RETVAL_LONG(-1);
+							php_error_docref(NULL, E_WARNING, "failed to write signer %d", i);
+						}
+					}
+
+					sk_X509_free(signers);
+				} else {
+					RETVAL_LONG(-1);
+					php_openssl_store_errors();
+				}
+
+				BUF_MEM *biobuf;
+				BIO_get_mem_ptr(certout, &biobuf);
+				zval_dtor(zoutdata);
+				ZVAL_STRINGL(zoutdata, biobuf->data, biobuf->length);
+
+				BIO_free(certout);
+			} else {
+				php_openssl_store_errors();
+				// php_error_docref(NULL, E_WARNING, "signature OK, but cannot open %s for writing", signersfilename);
+				RETVAL_LONG(-1);
+			}
+		}
+	} else {
+		php_openssl_store_errors();
+		RETVAL_FALSE;
+	}
+clean_exit:
+	X509_STORE_free(store);
+	BIO_free(datain);
+	BIO_free(in);
+	BIO_free(dataout);
+	PKCS7_free(p7);
+	sk_X509_free(others);
+}
+/* }}} */
 /* {{{ proto bool openssl_pkcs7_encrypt(string infile, string outfile, mixed recipcerts, array headers [, long flags [, long cipher]])
    Encrypts the message in the file named infile with the certificates in recipcerts and output the result to the file named outfile */
 PHP_FUNCTION(openssl_pkcs7_encrypt)
