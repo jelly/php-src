@@ -4971,7 +4971,7 @@ PHP_FUNCTION(openssl_pkcs7_verify)
 	STACK_OF(X509) *signers= NULL;
 	STACK_OF(X509) *others = NULL;
 	PKCS7 * p7 = NULL;
-	BIO * in = NULL, * datain = NULL, * dataout = NULL;
+	BIO * in = NULL, * datain = NULL, * dataout = NULL, * chainout = NULL;
 	zend_long flags = 0;
 	char * filename;
 	size_t filename_len;
@@ -4981,12 +4981,14 @@ PHP_FUNCTION(openssl_pkcs7_verify)
 	size_t signersfilename_len = 0;
 	char * datafilename = NULL;
 	size_t datafilename_len = 0;
+	char * chainfilename = NULL;
+	size_t chainfilename_len = 0;
 
 	RETVAL_LONG(-1);
 
-	if (zend_parse_parameters(ZEND_NUM_ARGS(), "pl|papp", &filename, &filename_len,
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "pl|pappp", &filename, &filename_len,
 				&flags, &signersfilename, &signersfilename_len, &cainfo,
-				&extracerts, &extracerts_len, &datafilename, &datafilename_len) == FAILURE) {
+				&extracerts, &extracerts_len, &datafilename, &datafilename_len, &chainfilename, &chainfilename_len) == FAILURE) {
 		return;
 	}
 
@@ -5034,6 +5036,19 @@ PHP_FUNCTION(openssl_pkcs7_verify)
 			goto clean_exit;
 		}
 	}
+
+	if (chainfilename) {
+
+		if (php_openssl_open_base_dir_chk(chainfilename)) {
+			goto clean_exit;
+		}
+
+		chainout = BIO_new_file(chainfilename, "w");
+		if (chainout == NULL) {
+			php_openssl_store_errors();
+			goto clean_exit;
+		}
+	}
 #if DEBUG_SMIME
 	zend_printf("Calling PKCS7 verify\n");
 #endif
@@ -5074,6 +5089,10 @@ PHP_FUNCTION(openssl_pkcs7_verify)
 				php_openssl_store_errors();
 				php_error_docref(NULL, E_WARNING, "signature OK, but cannot open %s for writing", signersfilename);
 				RETVAL_LONG(-1);
+			}
+
+			if (chainout) {
+				PEM_write_bio_PKCS7(chainout, p7);
 			}
 		}
 	} else {
