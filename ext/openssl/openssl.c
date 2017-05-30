@@ -310,6 +310,11 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_openssl_pkcs7_decrypt, 0, 0, 3)
 	ZEND_ARG_INFO(0, recipkey)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_openssl_pkcs7_read, 0, 0, 2)
+	ZEND_ARG_INFO(0, infilename)
+	ZEND_ARG_INFO(1, certs)
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_openssl_private_encrypt, 0, 0, 3)
 	ZEND_ARG_INFO(0, data)
 	ZEND_ARG_INFO(1, crypted)
@@ -511,6 +516,7 @@ const zend_function_entry openssl_functions[] = {
 	PHP_FE(openssl_pkcs7_decrypt,		arginfo_openssl_pkcs7_decrypt)
 	PHP_FE(openssl_pkcs7_sign,			arginfo_openssl_pkcs7_sign)
 	PHP_FE(openssl_pkcs7_encrypt,		arginfo_openssl_pkcs7_encrypt)
+	PHP_FE(openssl_pkcs7_read,		arginfo_openssl_pkcs7_read)
 
 	PHP_FE(openssl_private_encrypt,		arginfo_openssl_private_encrypt)
 	PHP_FE(openssl_private_decrypt,		arginfo_openssl_private_decrypt)
@@ -5240,6 +5246,101 @@ clean_exit:
 	if (recipcerts) {
 		sk_X509_pop_free(recipcerts, X509_free);
 	}
+}
+/* }}} */
+
+/* {{{ proto bool openssl_pkcs7_read(string infile, array &certs)
+   Exports the PKCS7 file to an array of PEM certificates */
+PHP_FUNCTION(openssl_pkcs7_read)
+{
+	zval * zout = NULL, zcerts, zcert;
+	STACK_OF(X509) *certs = NULL;
+	STACK_OF(X509_CRL) *crls = NULL;
+	BIO * infile = NULL, * bio_out = NULL;
+	PKCS7 * p7 = NULL;
+	char * infilename = NULL;
+	size_t infilename_len;
+	int i;
+
+	RETVAL_FALSE;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "pz/", &infilename, &infilename_len,
+				&zout) == FAILURE)
+		return;
+
+
+	if (php_openssl_open_base_dir_chk(infilename)) {
+		return;
+	}
+
+	infile = BIO_new_file(infilename, "r");
+	if (infile == NULL) {
+		php_openssl_store_errors();
+		goto clean_exit;
+	}
+
+	// XXX: ASN.1?
+	p7 = PEM_read_bio_PKCS7(infile, NULL, NULL, NULL);
+
+	zval_dtor(zout);
+	array_init(zout);
+
+	switch (OBJ_obj2nid(p7->type)) {
+	case NID_pkcs7_signed:
+		if (p7->d.sign != NULL) {
+			certs = p7->d.sign->cert;
+			crls = p7->d.sign->crl;
+		}
+		break;
+	case NID_pkcs7_signedAndEnveloped:
+		if (p7->d.signed_and_enveloped != NULL) {
+			certs = p7->d.signed_and_enveloped->cert;
+			crls = p7->d.signed_and_enveloped->crl;
+		}
+		break;
+	default:
+		break;
+	}
+
+	if (certs != NULL) {
+		for (i = 0; i < sk_X509_num(certs); i++) {
+			X509* aCA = sk_X509_pop(certs);
+			if (!aCA) break;
+
+			bio_out = BIO_new(BIO_s_mem());
+			if (PEM_write_bio_X509(bio_out, aCA)) {
+				BUF_MEM *bio_buf;
+				BIO_get_mem_ptr(bio_out, &bio_buf);
+				ZVAL_STRINGL(&zcert, bio_buf->data, bio_buf->length);
+				add_index_zval(zout, i, &zcert);
+			}
+
+			X509_free(aCA);
+		}
+	}
+
+	if (crls != NULL) {
+		X509_CRL *crl;
+		for (i = 0; i < sk_X509_CRL_num(crls); i++) {
+			X509_CRL* crl = sk_X509_CRL_pop(crls);
+			if (!crl) break;
+
+			bio_out = BIO_new(BIO_s_mem());
+			if (PEM_write_bio_X509_CRL(bio_out, crl)) {
+				BUF_MEM *bio_buf;
+				BIO_get_mem_ptr(bio_out, &bio_buf);
+				ZVAL_STRINGL(&zcert, bio_buf->data, bio_buf->length);
+				add_index_zval(zout, i, &zcert);
+			}
+
+			X509_CRL_free(crl);
+		}
+	}
+	RETVAL_TRUE;
+
+clean_exit:
+	PKCS7_free(p7);
+	BIO_free(infile);
 }
 /* }}} */
 
