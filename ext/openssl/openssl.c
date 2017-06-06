@@ -5099,6 +5099,7 @@ PHP_FUNCTION(openssl_pkcs7_verify)
 
 			if (chainout) {
 				PEM_write_bio_PKCS7(chainout, p7);
+				BIO_free(chainout);
 			}
 		}
 	} else {
