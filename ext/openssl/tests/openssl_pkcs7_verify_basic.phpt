@@ -14,6 +14,11 @@ if ($contentfile === false) {
 	die("failed to get a temporary filename!");
 }
 
+$pkcsfile = tempnam(sys_get_temp_dir(), "ssl");
+if ($pkcsfile === false) {
+	die("failed to get a temporary filename!");
+}
+
 $infile = dirname(__FILE__) . "/cert.crt";
 $eml = dirname(__FILE__) . "/signed.eml";
 $wrong = "wrong";
@@ -26,6 +31,7 @@ var_dump(openssl_pkcs7_verify($eml, 0));
 var_dump(openssl_pkcs7_verify($eml, 0, $empty));
 var_dump(openssl_pkcs7_verify($eml, PKCS7_NOVERIFY, $outfile));
 var_dump(openssl_pkcs7_verify($eml, PKCS7_NOVERIFY, $outfile, $cainfo, $outfile, $contentfile));
+var_dump(openssl_pkcs7_verify($eml, PKCS7_NOVERIFY, $outfile, $cainfo, $outfile, $contentfile, $pkcsfile));
 
 if (file_exists($outfile)) {
 	echo "true\n";
@@ -36,6 +42,11 @@ if (file_exists($contentfile)) {
 	echo "true\n";
 	unlink($contentfile);
 }
+
+if (file_exists($pkcsfile)) {
+	echo "true\n";
+	unlink($pkcsfile);
+}
 ?>
 --EXPECTF--
 int(-1)
@@ -44,5 +55,7 @@ bool(false)
 bool(false)
 bool(true)
 bool(true)
+bool(true)
+true
 true
 true
