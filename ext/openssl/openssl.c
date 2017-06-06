@@ -5281,6 +5281,10 @@ PHP_FUNCTION(openssl_pkcs7_read)
 
 	// XXX: ASN.1?
 	p7 = PEM_read_bio_PKCS7(infile, NULL, NULL, NULL);
+	if (p7 == NULL) {
+		php_openssl_store_errors();
+		goto clean_exit;
+	}
 
 	zval_dtor(zout);
 	array_init(zout);
