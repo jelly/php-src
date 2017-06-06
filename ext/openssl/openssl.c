@@ -5320,6 +5320,7 @@ PHP_FUNCTION(openssl_pkcs7_read)
 				add_index_zval(zout, i, &zcert);
 			}
 
+			BIO_free(bio_out);
 			X509_free(aCA);
 		}
 	}
@@ -5338,6 +5339,7 @@ PHP_FUNCTION(openssl_pkcs7_read)
 				add_index_zval(zout, i, &zcert);
 			}
 
+			BIO_free(bio_out);
 			X509_CRL_free(crl);
 		}
 	}
