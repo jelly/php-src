@@ -287,6 +287,16 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_openssl_pkcs7_verify, 0, 0, 2)
 	ZEND_ARG_INFO(0, pk7)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_openssl_pkcs7_mem_verify, 0, 0, 2)
+	ZEND_ARG_INFO(0, indata)
+	ZEND_ARG_INFO(0, flags)
+	ZEND_ARG_INFO(1, signerscerts)
+	ZEND_ARG_INFO(0, cainfo) /* array */
+	ZEND_ARG_INFO(0, extracerts)
+	ZEND_ARG_INFO(1, content)
+	ZEND_ARG_INFO(1, pk7)
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_openssl_pkcs7_encrypt, 0, 0, 4)
 	ZEND_ARG_INFO(0, infile)
 	ZEND_ARG_INFO(0, outfile)
@@ -517,6 +527,7 @@ static const zend_function_entry openssl_functions[] = {
 
 /* for S/MIME handling */
 	PHP_FE(openssl_pkcs7_verify,		arginfo_openssl_pkcs7_verify)
+	PHP_FE(openssl_pkcs7_mem_verify,	arginfo_openssl_pkcs7_mem_verify)
 	PHP_FE(openssl_pkcs7_decrypt,		arginfo_openssl_pkcs7_decrypt)
 	PHP_FE(openssl_pkcs7_sign,			arginfo_openssl_pkcs7_sign)
 	PHP_FE(openssl_pkcs7_encrypt,		arginfo_openssl_pkcs7_encrypt)
@@ -5130,6 +5141,153 @@ PHP_FUNCTION(openssl_pkcs7_verify)
 		php_openssl_store_errors();
 		RETVAL_FALSE;
 	}
+clean_exit:
+	if (p7bout) {
+		BIO_free(p7bout);
+	}
+	X509_STORE_free(store);
+	BIO_free(datain);
+	BIO_free(in);
+	BIO_free(dataout);
+	PKCS7_free(p7);
+	sk_X509_free(others);
+}
+/* }}} */
+
+/* {{{ proto bool openssl_pkcs7_mem_verify(string indata, int flags [, string signerscerts [, array cainfo [, string extracerts [, string content [, string pk7]]]]])
+   Verifys that the data block is intact, the signer is who they say they are, and returns the CERTs of the signers */
+PHP_FUNCTION(openssl_pkcs7_mem_verify)
+{
+	X509_STORE * store = NULL;
+	zval * cainfo = NULL, * signerscert = NULL, * content = NULL, * pk7 = NULL;
+	STACK_OF(X509) *signers= NULL;
+	STACK_OF(X509) *others = NULL;
+	PKCS7 * p7 = NULL;
+	BIO * in = NULL, * datain = NULL, * dataout = NULL, * p7bout = NULL, * certout = NULL;
+	zend_long flags = 0;
+	char * extracerts = NULL;
+	size_t extracerts_len = 0;
+	char * indata;
+	size_t indata_len;
+
+	RETVAL_LONG(-1);
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "sl|z/apz/z/", &indata, &indata_len,
+				&flags, &signerscert, &cainfo,
+				&extracerts, &extracerts_len, &content, &pk7) == FAILURE) {
+		return;
+	}
+
+	if (extracerts) {
+		others = php_openssl_load_all_certs_from_file(extracerts);
+		if (others == NULL) {
+			goto clean_exit;
+		}
+	}
+
+	flags = flags & ~PKCS7_DETACHED;
+
+	store = php_openssl_setup_verify(cainfo);
+
+	if (!store) {
+		goto clean_exit;
+	}
+
+	in = BIO_new(BIO_s_mem());
+	if (!BIO_write(in, indata, indata_len)) {
+		goto clean_exit;
+	}
+
+	/* Overlapping code */
+
+	p7 = SMIME_read_PKCS7(in, &datain);
+	if (p7 == NULL) {
+#ifdef DEBUG_SMIME
+		zend_printf("SMIME_read_PKCS7 failed\n");
+#endif
+		php_openssl_store_errors();
+		goto clean_exit;
+	}
+
+	if (signerscert != NULL) {
+		certout = BIO_new(BIO_s_mem());
+		if (certout == NULL) {
+			php_openssl_store_errors();
+			goto clean_exit;
+		}
+	}
+
+	if (content != NULL) {
+		dataout = BIO_new(BIO_s_mem());
+		if (dataout == NULL) {
+			php_openssl_store_errors();
+			goto clean_exit;
+		}
+	}
+	
+	if (pk7 != NULL) {
+		p7bout = BIO_new(BIO_s_mem());
+		if (p7bout == NULL) {
+			php_openssl_store_errors();
+			goto clean_exit;
+		}
+	}
+#if DEBUG_SMIME
+	zend_printf("Calling PKCS7 verify\n");
+#endif
+
+	if (PKCS7_verify(p7, others, store, datain, dataout, (int)flags)) {
+		RETVAL_TRUE;
+
+		if (certout) {
+			int i;
+			signers = PKCS7_get0_signers(p7, NULL, (int)flags);
+			if (signers != NULL) {
+
+				for (i = 0; i < sk_X509_num(signers); i++) {
+					if (!PEM_write_bio_X509(certout, sk_X509_value(signers, i))) {
+						php_openssl_store_errors();
+						RETVAL_LONG(-1);
+						php_error_docref(NULL, E_WARNING, "failed to write signer %d", i);
+					}
+				}
+
+				sk_X509_free(signers);
+			} else {
+				RETVAL_LONG(-1);
+				php_openssl_store_errors();
+			}
+
+			if (certout) {
+				BUF_MEM *buf;
+				zval_dtor(signerscert);
+				BIO_get_mem_ptr(certout, &buf);
+				ZVAL_STRINGL(signerscert, buf->data, buf->length);
+			}
+
+			BIO_free(certout);
+		}
+
+		if (dataout) {
+			BUF_MEM * buf;
+			BIO_get_mem_ptr(dataout, &buf);
+			zval_dtor(content);
+			ZVAL_STRINGL(content, buf->data, buf->length);
+		}
+
+		if (p7bout) {
+			BUF_MEM * p7buf;
+			PEM_write_bio_PKCS7(p7bout, p7);
+			BIO_get_mem_ptr(p7bout, &p7buf);
+			zval_dtor(content);
+			ZVAL_STRINGL(pk7, p7buf->data, p7buf->length);
+		}
+	} else {
+		php_openssl_store_errors();
+		RETVAL_FALSE;
+	}
+
+
 clean_exit:
 	if (p7bout) {
 		BIO_free(p7bout);
