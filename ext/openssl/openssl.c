@@ -5259,28 +5259,28 @@ PHP_FUNCTION(openssl_pkcs7_mem_verify)
 			}
 
 			if (certout) {
-				BUF_MEM *buf;
+				BUF_MEM *bio_buf;
 				zval_dtor(signerscert);
-				BIO_get_mem_ptr(certout, &buf);
-				ZVAL_STRINGL(signerscert, buf->data, buf->length);
+				BIO_get_mem_ptr(certout, &bio_buf);
+				ZVAL_STRINGL(signerscert, bio_buf->data, bio_buf->length);
 			}
 
 			BIO_free(certout);
 		}
 
 		if (dataout) {
-			BUF_MEM * buf;
-			BIO_get_mem_ptr(dataout, &buf);
+			BUF_MEM * bio_buf;
+			BIO_get_mem_ptr(dataout, &bio_buf);
 			zval_dtor(content);
-			ZVAL_STRINGL(content, buf->data, buf->length);
+			ZVAL_STRINGL(content, bio_buf->data, bio_buf->length);
 		}
 
 		if (p7bout) {
-			BUF_MEM * p7buf;
+			BUF_MEM * bio_buf;
 			PEM_write_bio_PKCS7(p7bout, p7);
-			BIO_get_mem_ptr(p7bout, &p7buf);
+			BIO_get_mem_ptr(p7bout, &bio_buf);
 			zval_dtor(content);
-			ZVAL_STRINGL(pk7, p7buf->data, p7buf->length);
+			ZVAL_STRINGL(pk7, bio_buf->data, bio_buf->length);
 		}
 	} else {
 		php_openssl_store_errors();
